@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>تطبيق الرسم باليد</title>
+  
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
+  <style>
+    /* إعدادات التصميم لملء الشاشة وجعل الخلفية سوداء */
+    body {
+      margin: 0;
+      overflow: hidden;
+      background-color: #111;
+      font-family: sans-serif;
+    }
+    /* إخفاء عنصر الفيديو الأساسي لأننا سنرسم على الـ Canvas مباشرة */
+    video { display: none; }
+    
+    /* جعل مساحة الرسم تملأ الشاشة بالكامل */
+    canvas {
+      display: block;
+      width: 100vw;
+      height: 100vh;
+      transform: scaleX(-1); /* عكس الشاشة لتعمل كمرآة */
+    }
+    
+    /* تصميم زر مسح الشاشة */
+    #clearBtn {
+      position: absolute;
+      top: 20px;
+      left: 20px;
+      padding: 12px 24px;
+      font-size: 16px;
+      background: #e74c3c;
+      color: white;
+      border: none;
+      border-radius: 8px;
+      z-index: 10;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+
+  <button id="clearBtn">مسح الشاشة</button>
+  
+  <video id="input_video" autoplay playsinline></video>
+  
+  <canvas id="output_canvas"></canvas>
+
+  <script>
+    // 1. تعريف المتغيرات الأساسية للـ Canvas والفيديو
+    const videoElement = document.getElementById('input_video');
+    const canvasElement = document.getElementById('output_canvas');
+    const canvasCtx = canvasElement.getContext('2d');
+    
+    // متغيرات لتتبع حركة القلم (الإصبع)
+    let isDrawing = false;
+    let lastX = 0;
+    let lastY = 0;
+
+    // ضبط حجم مساحة الرسم لتناسب الشاشة
+    canvasElement.width = window.innerWidth;
+    canvasElement.height = window.innerHeight;
+
+    // تفعيل زر مسح الشاشة
+    document.getElementById('clearBtn').addEventListener('click', () => {
+      canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+    });
+
+    // 2. الدالة التي يتم استدعاؤها في كل مرة تتعرف فيها الكاميرا على يد
+    function onResults(results) {
+      // إذا تم العثور على يد في الصورة
+      if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+        const landmarks = results.multiHandLandmarks[0];
+        
+        // رقم 8 في مكتبة MediaPipe يمثل طرف إصبع السبابة
+        const indexFingerTip = landmarks[8]; 
+
+        // تحويل الإحداثيات لتناسب حجم شاشتك
+        const currentX = indexFingerTip.x * canvasElement.width;
+        const currentY = indexFingerTip.y * canvasElement.height;
+
+        if (!isDrawing) {
+          lastX = currentX;
+          lastY = currentY;
+          isDrawing = true;
+        }
+
+        // 3. رسم الخط من النقطة السابقة للنقطة الحالية
+        canvasCtx.beginPath();
+        canvasCtx.moveTo(lastX, lastY);
+        canvasCtx.lineTo(currentX, currentY);
+        
+        // شكل ولون الخط (لون نيون مشابه للفيديو)
+        canvasCtx.strokeStyle = '#00FFFF'; 
+        canvasCtx.lineWidth = 6;
+        canvasCtx.lineCap = 'round';
+        canvasCtx.shadowBlur = 15;
+        canvasCtx.shadowColor = '#00FFFF'; // تأثير الإضاءة (النيون)
+        
+        canvasCtx.stroke();
+
+        // تحديث النقطة السابقة
+        lastX = currentX;
+        lastY = currentY;
+      } else {
+        // إذا لم تكن اليد ظاهرة، توقف عن الرسم
+        isDrawing = false;
+      }
+    }
+
+    // 4. إعداد مكتبة تتبع اليد (MediaPipe)
+    const hands = new Hands({locateFile: (file) => {
+      return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+    }});
+    
+    hands.setOptions({
+      maxNumHands: 1, // تتبع يد واحدة فقط
+      modelComplexity: 1, // تعقيد الموديل (مناسب للهواتف)
+      minDetectionConfidence: 0.7,
+      minTrackingConfidence: 0.7
+    });
+    hands.onResults(onResults);
+
+    // 5. تشغيل الكاميرا الأمامية للهاتف
+    const camera = new Camera(videoElement, {
+      onFrame: async () => {
+        await hands.send({image: videoElement});
+      },
+      width: 1280,
+      height: 720,
+      facingMode: 'user' // 'user' تعني الكاميرا الأمامية
+    });
+    camera.start();
+  </script>
+</body>
+</html>
