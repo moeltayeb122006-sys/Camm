@@ -3,139 +3,197 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>تطبيق الرسم باليد</title>
+  <title>تطبيق الرسم الذكي باليد</title>
   
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
 
   <style>
-    /* إعدادات التصميم لملء الشاشة وجعل الخلفية سوداء */
     body {
       margin: 0;
       overflow: hidden;
-      background-color: #111;
+      background-color: #111; /* لون الخلفية الداكن */
       font-family: sans-serif;
     }
-    /* إخفاء عنصر الفيديو الأساسي لأننا سنرسم على الـ Canvas مباشرة */
     video { display: none; }
-    
-    /* جعل مساحة الرسم تملأ الشاشة بالكامل */
     canvas {
       display: block;
       width: 100vw;
       height: 100vh;
       transform: scaleX(-1); /* عكس الشاشة لتعمل كمرآة */
+      background: transparent;
     }
-    
-    /* تصميم زر مسح الشاشة */
-    #clearBtn {
+    /* مؤشر الحالة أعلى الشاشة */
+    #status {
       position: absolute;
       top: 20px;
-      left: 20px;
-      padding: 12px 24px;
-      font-size: 16px;
-      background: #e74c3c;
+      right: 20px;
+      padding: 10px 20px;
+      font-size: 18px;
       color: white;
-      border: none;
+      background: rgba(0,0,0,0.5);
       border-radius: 8px;
       z-index: 10;
-      cursor: pointer;
     }
   </style>
 </head>
 <body>
 
-  <button id="clearBtn">مسح الشاشة</button>
-  
+  <div id="status">الوضع: جاري التحميل...</div>
   <video id="input_video" autoplay playsinline></video>
-  
   <canvas id="output_canvas"></canvas>
 
   <script>
-    // 1. تعريف المتغيرات الأساسية للـ Canvas والفيديو
     const videoElement = document.getElementById('input_video');
     const canvasElement = document.getElementById('output_canvas');
     const canvasCtx = canvasElement.getContext('2d');
+    const statusDiv = document.getElementById('status');
     
-    // متغيرات لتتبع حركة القلم (الإصبع)
-    let isDrawing = false;
-    let lastX = 0;
-    let lastY = 0;
-
-    // ضبط حجم مساحة الرسم لتناسب الشاشة
     canvasElement.width = window.innerWidth;
     canvasElement.height = window.innerHeight;
 
-    // تفعيل زر مسح الشاشة
-    document.getElementById('clearBtn').addEventListener('click', () => {
-      canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
-    });
+    // ذاكرة لحفظ الخطوط المرسومة
+    let strokes = [];
+    let currentStroke = null;
+    
+    // متغيرات لتحريك الشاشة (Pan)
+    let panX = 0;
+    let panY = 0;
+    let lastPinch = null;
 
-    // 2. الدالة التي يتم استدعاؤها في كل مرة تتعرف فيها الكاميرا على يد
+    // دالة لحساب المسافة بين نقطتين
+    function getDistance(p1, p2) {
+      return Math.hypot(p1.x - p2.x, p1.y - p2.y);
+    }
+
     function onResults(results) {
-      // إذا تم العثور على يد في الصورة
+      // 1. مسح الشاشة بالكامل في كل لقطة استعداداً لإعادة الرسم
+      canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+
+      let mode = 'توقف';
+
       if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
         const landmarks = results.multiHandLandmarks[0];
         
-        // رقم 8 في مكتبة MediaPipe يمثل طرف إصبع السبابة
-        const indexFingerTip = landmarks[8]; 
+        // تحديد النقاط الأساسية للأصابع (الطرف والمفصل الذي يليه)
+        const thumbTip = landmarks[4];
+        const indexTip = landmarks[8], indexPip = landmarks[6];
+        const middleTip = landmarks[12], middlePip = landmarks[10];
+        const ringTip = landmarks[16], ringPip = landmarks[14];
+        const pinkyTip = landmarks[20], pinkyPip = landmarks[18];
 
-        // تحويل الإحداثيات لتناسب حجم شاشتك
-        const currentX = indexFingerTip.x * canvasElement.width;
-        const currentY = indexFingerTip.y * canvasElement.height;
+        // التحقق من حالة كل إصبع (هل الطرف أعلى من المفصل؟ تذكر أن الإحداثي y يبدأ من الأعلى)
+        const isIndexUp = indexTip.y < indexPip.y;
+        const isMiddleUp = middleTip.y < middlePip.y;
+        const isRingUp = ringTip.y < ringPip.y;
+        const isPinkyUp = pinkyTip.y < pinkyPip.y;
 
-        if (!isDrawing) {
-          lastX = currentX;
-          lastY = currentY;
-          isDrawing = true;
+        // التحقق من "القرصة" أو الإمساك (المسافة بين الإبهام والسبابة)
+        const pinchDist = getDistance(thumbTip, indexTip);
+        const isPinching = pinchDist < 0.05; // 0.05 هي مسافة صغيرة جداً تعني تلامس الأصابع
+
+        // 2. تحديد الوضع (Mode) بناءً على الإيماءات
+        if (isPinching) {
+          mode = 'تحريك';
+        } else if (isIndexUp && !isMiddleUp && !isRingUp && !isPinkyUp) {
+          mode = 'رسم';
+        } else if (isIndexUp && isMiddleUp && !isRingUp && !isPinkyUp) {
+          mode = 'مسح';
+        } else {
+          mode = 'توقف';
         }
 
-        // 3. رسم الخط من النقطة السابقة للنقطة الحالية
-        canvasCtx.beginPath();
-        canvasCtx.moveTo(lastX, lastY);
-        canvasCtx.lineTo(currentX, currentY);
-        
-        // شكل ولون الخط (لون نيون مشابه للفيديو)
-        canvasCtx.strokeStyle = '#00FFFF'; 
-        canvasCtx.lineWidth = 6;
-        canvasCtx.lineCap = 'round';
-        canvasCtx.shadowBlur = 15;
-        canvasCtx.shadowColor = '#00FFFF'; // تأثير الإضاءة (النيون)
-        
-        canvasCtx.stroke();
+        // 3. تنفيذ الإجراء بناءً على الوضع
+        const currentX = indexTip.x * canvasElement.width;
+        const currentY = indexTip.y * canvasElement.height;
 
-        // تحديث النقطة السابقة
-        lastX = currentX;
-        lastY = currentY;
-      } else {
-        // إذا لم تكن اليد ظاهرة، توقف عن الرسم
-        isDrawing = false;
+        if (mode === 'رسم' || mode === 'مسح') {
+          // إذا بدأنا خطاً جديداً أو تغير الوضع
+          if (!currentStroke || currentStroke.mode !== mode) {
+            currentStroke = { mode: mode, points: [] };
+            strokes.push(currentStroke);
+          }
+          // نحفظ النقطة الحالية مخصوماً منها مسافة التحريك، لتبقى في مكانها الصحيح في الذاكرة
+          currentStroke.points.push({ x: currentX - panX, y: currentY - panY });
+          lastPinch = null; // تصفير متغير التحريك
+        } 
+        else if (mode === 'تحريك') {
+          currentStroke = null;
+          // حساب نقطة المنتصف بين الإبهام والسبابة
+          const pinchX = ((thumbTip.x + indexTip.x) / 2) * canvasElement.width;
+          const pinchY = ((thumbTip.y + indexTip.y) / 2) * canvasElement.height;
+
+          if (lastPinch) {
+            panX += (pinchX - lastPinch.x);
+            panY += (pinchY - lastPinch.y);
+          }
+          lastPinch = { x: pinchX, y: pinchY };
+        } 
+        else {
+          // وضع التوقف
+          currentStroke = null;
+          lastPinch = null;
+        }
       }
+
+      // تحديث واجهة المستخدم
+      statusDiv.innerText = `الوضع: ${mode}`;
+
+      // 4. إعادة رسم كل شيء من الذاكرة (Strokes)
+      canvasCtx.save();
+      canvasCtx.translate(panX, panY); // تحريك مساحة الرسم بالكامل
+
+      for (const stroke of strokes) {
+        if (stroke.points.length === 0) continue;
+
+        canvasCtx.beginPath();
+        canvasCtx.moveTo(stroke.points[0].x, stroke.points[0].y);
+        for (let i = 1; i < stroke.points.length; i++) {
+          canvasCtx.lineTo(stroke.points[i].x, stroke.points[i].y);
+        }
+
+        if (stroke.mode === 'رسم') {
+          canvasCtx.globalCompositeOperation = 'source-over';
+          canvasCtx.strokeStyle = '#00FFFF';
+          canvasCtx.lineWidth = 6;
+          canvasCtx.lineCap = 'round';
+          canvasCtx.lineJoin = 'round';
+          canvasCtx.shadowBlur = 15;
+          canvasCtx.shadowColor = '#00FFFF';
+        } else if (stroke.mode === 'مسح') {
+          // هذه الخاصية تقوم بمسح ما تحتها بدلاً من الرسم فوقه
+          canvasCtx.globalCompositeOperation = 'destination-out';
+          canvasCtx.strokeStyle = 'rgba(0,0,0,1)';
+          canvasCtx.lineWidth = 40; // مساحة المسح أوسع من القلم
+          canvasCtx.lineCap = 'round';
+          canvasCtx.lineJoin = 'round';
+          canvasCtx.shadowBlur = 0;
+        }
+        canvasCtx.stroke();
+      }
+      canvasCtx.restore();
     }
 
-    // 4. إعداد مكتبة تتبع اليد (MediaPipe)
+    // إعداد مكتبة MediaPipe
     const hands = new Hands({locateFile: (file) => {
       return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
     }});
-    
     hands.setOptions({
-      maxNumHands: 1, // تتبع يد واحدة فقط
-      modelComplexity: 1, // تعقيد الموديل (مناسب للهواتف)
+      maxNumHands: 1,
+      modelComplexity: 1,
       minDetectionConfidence: 0.7,
       minTrackingConfidence: 0.7
     });
     hands.onResults(onResults);
 
-    // 5. تشغيل الكاميرا الأمامية للهاتف
+    // تشغيل الكاميرا
     const camera = new Camera(videoElement, {
       onFrame: async () => {
         await hands.send({image: videoElement});
       },
-      width: 1280,
-      height: 720,
-      facingMode: 'user' // 'user' تعني الكاميرا الأمامية
+      width: window.innerWidth,
+      height: window.innerHeight,
+      facingMode: 'user'
     });
     camera.start();
   </script>
